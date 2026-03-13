@@ -1,0 +1,16 @@
+{
+  "name": "bisco-bot",
+  "version": "0.1.0",
+  "description": "Disco Biscuits fan bot — setlist lookups, show stats, and community tools",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "discord.js": "^14.17.0",
+    "dotenv": "^16.4.0"
+  }
+}
