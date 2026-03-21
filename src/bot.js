@@ -6,6 +6,16 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // Conversation history per channel (in-memory, resets on restart)
 const conversations = new Map();
 
+async function fetchGif(query) {
+  const key = process.env.GIPHY_API_KEY;
+  const url = `https://api.giphy.com/v1/gifs/search?api_key=${key}&q=${encodeURIComponent(query)}&limit=5&rating=pg-13`;
+  const res = await fetch(url);
+  const json = await res.json();
+  if (!json.data || json.data.length === 0) return null;
+  const pick = json.data[Math.floor(Math.random() * json.data.length)];
+  return pick.images.original.url;
+}
+
 const PUBLIC_SYSTEM_PROMPT = `You are Bisco Bot — a Disco Biscuits fan who's been to a lot of shows and remembers most of them. You live in a Discord server and help fans dig into the setlist database.
 
 You can look up:
@@ -167,6 +177,17 @@ const tools = [
       properties: {},
       required: []
     }
+  },
+  {
+    name: 'send_gif',
+    description: 'Search Giphy and post a GIF to the Discord channel. Use when the moment calls for it — reactions, celebrations, memes, "this is the way" energy.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search term for the GIF (e.g. "this is the way", "mind blown", "disco dancing")' }
+      },
+      required: ['query']
+    }
   }
 ];
 
@@ -241,7 +262,18 @@ export async function handleMessage(message) {
       const toolResults = [];
 
       for (const toolUse of toolUses) {
-        const result = await callMcp(toolUse.name, toolUse.input);
+        let result;
+        if (toolUse.name === 'send_gif') {
+          const gifUrl = await fetchGif(toolUse.input.query);
+          if (gifUrl) {
+            await message.channel.send(gifUrl);
+            result = { success: true, url: gifUrl };
+          } else {
+            result = { success: false, error: 'No GIF found' };
+          }
+        } else {
+          result = await callMcp(toolUse.name, toolUse.input);
+        }
         toolResults.push({
           type: 'tool_result',
           tool_use_id: toolUse.id,
