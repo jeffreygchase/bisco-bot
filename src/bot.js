@@ -170,12 +170,29 @@ const tools = [
   }
 ];
 
-function buildContent(message) {
-  const images = message.attachments
-    .filter(a => a.contentType && a.contentType.startsWith('image/'))
-    .map(a => ({ type: 'image', source: { type: 'url', url: a.url } }));
+async function fetchImageAsBase64(url) {
+  const res = await fetch(url);
+  const buffer = await res.arrayBuffer();
+  return Buffer.from(buffer).toString('base64');
+}
 
-  if (images.length === 0) return message.content;
+async function buildContent(message) {
+  const imageAttachments = message.attachments
+    ? [...message.attachments.values()].filter(a => a.contentType && a.contentType.startsWith('image/'))
+    : [];
+
+  if (imageAttachments.length === 0) return message.content;
+
+  const images = await Promise.all(
+    imageAttachments.map(async a => ({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: a.contentType.split(';')[0],
+        data: await fetchImageAsBase64(a.url),
+      },
+    }))
+  );
 
   return [
     { type: 'text', text: message.content || '(image)' },
@@ -193,7 +210,7 @@ export async function handleMessage(message) {
   const history = conversations.get(channelId);
 
   // Build user content — text + any image attachments
-  const userContent = buildContent(message);
+  const userContent = await buildContent(message);
   history.push({ role: 'user', content: userContent });
 
   // Keep history to last 20 messages to avoid token bloat
@@ -290,7 +307,7 @@ export async function handleImrryr(message) {
   }
   const history = imrryrConversations.get(channelId);
 
-  const imrryrContent = buildContent({ ...message, content: `${message.author.username}: ${message.content}` });
+  const imrryrContent = await buildContent({ ...message, content: `${message.author.username}: ${message.content}` });
   history.push({ role: 'user', content: imrryrContent });
   if (history.length > 20) history.splice(0, history.length - 20);
 
