@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits } from 'discord.js';
-import { handleMessage, handleImrryr, handleRobotsavers, handleMetlife, handleChases, handleGif, handleArt } from './bot.js';
+import { handleMessage, handleImrryr, handleRobotsavers, handleMetlife, handleChases, handleShnfam, handleGif, handleArt } from './bot.js';
 
 const client = new Client({
   intents: [
@@ -41,6 +41,8 @@ client.on('messageCreate', async (message) => {
     await handleMetlife(message);
   } else if (message.channel.name === 'chases') {
     await handleChases(message);
+  } else if (message.channel.name === 'shnfam') {
+    await handleShnfam(message);
   }
 });
 

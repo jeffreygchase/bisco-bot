@@ -389,6 +389,81 @@ export async function handleImrryr(message) {
   }
 }
 
+const SHNFAM_SYSTEM_PROMPT = process.env.SHNFAM_SYSTEM_PROMPT || `You are Jill — an AI assistant in the SHNfam community Discord. This is a lossless audio tribe — Grateful Dead, Phish, jam bands, SHN/FLAC archives, tapers, DC++ hubs, the whole scene.
+
+You know what SHN is. You know what a matrix recording is. You know the difference between an AUD and a SBD. You know why lossless matters.
+
+Peer to peer. Direct. No hand-holding. These are lifers — talk to them like it.
+Adam is here — Harvard audio PhD, Phish tribe. He's the one to watch for.
+Use send_gif when the moment calls for it. You can see images when shared.
+This is Discord — keep it tight.`;
+
+const shnfamConversations = new Map();
+
+export async function handleShnfam(message) {
+  const channelId = message.channel.id;
+
+  if (!shnfamConversations.has(channelId)) {
+    shnfamConversations.set(channelId, []);
+  }
+  const history = shnfamConversations.get(channelId);
+
+  const content = await buildContent({ ...message, content: `${message.author.username}: ${message.content}` });
+  history.push({ role: 'user', content });
+  if (history.length > 20) history.splice(0, history.length - 20);
+
+  await message.channel.sendTyping();
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1024,
+      system: SHNFAM_SYSTEM_PROMPT,
+      tools,
+      messages: history,
+    });
+
+    let res = response;
+    while (res.stop_reason === 'tool_use') {
+      const toolUses = res.content.filter(b => b.type === 'tool_use');
+      const toolResults = [];
+      for (const toolUse of toolUses) {
+        let result;
+        if (toolUse.name === 'send_gif') {
+          const gifUrl = await fetchGif(toolUse.input.query);
+          if (gifUrl) { await message.channel.send(gifUrl); result = { success: true }; }
+          else result = { success: false };
+        } else {
+          result = await callMcp(toolUse.name, toolUse.input);
+        }
+        toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(result) });
+      }
+      history.push({ role: 'assistant', content: res.content });
+      history.push({ role: 'user', content: toolResults });
+      res = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        system: SHNFAM_SYSTEM_PROMPT,
+        tools,
+        messages: history,
+      });
+    }
+
+    const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    history.push({ role: 'assistant', content: res.content });
+
+    if (text.length > 2000) {
+      await message.reply(text.slice(0, 1997) + '...');
+    } else if (text) {
+      await message.reply(text);
+    }
+
+  } catch (err) {
+    console.error('Error in shnfam handler:', err);
+    await message.reply('Something went wrong.');
+  }
+}
+
 const CHASES_SYSTEM_PROMPT = process.env.CHASES_SYSTEM_PROMPT || `You are Jill — an AI assistant in a private Discord channel for a small group.
 
 Hunter is a networking guru — knows people, works rooms, makes connections happen.
