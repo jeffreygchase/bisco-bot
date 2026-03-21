@@ -170,6 +170,19 @@ const tools = [
   }
 ];
 
+function buildContent(message) {
+  const images = message.attachments
+    .filter(a => a.contentType && a.contentType.startsWith('image/'))
+    .map(a => ({ type: 'image', source: { type: 'url', url: a.url } }));
+
+  if (images.length === 0) return message.content;
+
+  return [
+    { type: 'text', text: message.content || '(image)' },
+    ...images,
+  ];
+}
+
 export async function handleMessage(message) {
   const channelId = message.channel.id;
 
@@ -179,8 +192,9 @@ export async function handleMessage(message) {
   }
   const history = conversations.get(channelId);
 
-  // Add user message to history
-  history.push({ role: 'user', content: message.content });
+  // Build user content — text + any image attachments
+  const userContent = buildContent(message);
+  history.push({ role: 'user', content: userContent });
 
   // Keep history to last 20 messages to avoid token bloat
   if (history.length > 20) history.splice(0, history.length - 20);
@@ -276,7 +290,8 @@ export async function handleImrryr(message) {
   }
   const history = imrryrConversations.get(channelId);
 
-  history.push({ role: 'user', content: `${message.author.username}: ${message.content}` });
+  const imrryrContent = buildContent({ ...message, content: `${message.author.username}: ${message.content}` });
+  history.push({ role: 'user', content: imrryrContent });
   if (history.length > 20) history.splice(0, history.length - 20);
 
   await message.channel.sendTyping();
