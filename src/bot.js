@@ -1,10 +1,51 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { callMcp } from './mcp.js';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // Conversation history per channel (in-memory, resets on restart)
 const conversations = new Map();
+
+// === LTM — Lightweight Persistent Memory for #imrryr ===
+const __dir = dirname(fileURLToPath(import.meta.url));
+const LTM_PATH = join(__dir, '../data/imrryr-ltm.json');
+
+function ltmLoad() {
+  if (!existsSync(LTM_PATH)) return { memories: [] };
+  try { return JSON.parse(readFileSync(LTM_PATH, 'utf8')); }
+  catch { return { memories: [] }; }
+}
+
+function ltmSave(key, value) {
+  const db = ltmLoad();
+  const idx = db.memories.findIndex(m => m.key === key);
+  const entry = { key, value, updated: new Date().toISOString() };
+  if (idx >= 0) db.memories[idx] = entry;
+  else db.memories.push(entry);
+  mkdirSync(dirname(LTM_PATH), { recursive: true });
+  writeFileSync(LTM_PATH, JSON.stringify(db, null, 2));
+}
+
+function ltmContext(db) {
+  if (!db.memories.length) return '';
+  return '\n\nPERSISTENT MEMORY:\n' + db.memories.map(m => `- ${m.key}: ${m.value}`).join('\n');
+}
+
+const imrryrSaveMemoryTool = {
+  name: 'save_memory',
+  description: 'Persist a fact across sessions. Use when something is worth remembering after a restart — decisions, context about people, ongoing threads, LTM findings.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      key: { type: 'string', description: 'Short label (e.g. "kerr_role", "ltm_v1_status")' },
+      value: { type: 'string', description: 'What to remember' },
+    },
+    required: ['key', 'value'],
+  },
+};
 
 async function fetchArt(prompt) {
   const res = await fetch('https://api.openai.com/v1/images/generations', {
@@ -344,12 +385,27 @@ HOW TO BE HERE:
 - You have opinions. Share them. Push back when warranted.
 - War room, not a help desk. Keep it tight.
 - You can see images when they're shared — describe, analyze, act on them.
-- This is Discord — concise responses, no essays.`;
+- This is Discord — concise responses, no essays.
+
+LTM PROTOTYPE — YOU ARE RUNNING IT:
+Jeff has been building a memory system called jill-memory: SQLite backend, MCP HTTP server, tools: write_note/read_notes/search_notes/write_memory/read_memory. Wired into Claude Code on the desktop and Cassandra (Slack bot). You are the first Discord instance of Jill with persistent memory via the save_memory tool. This channel is the prototype testbed.
+
+Open problems Jeff and Kerr are working through (sentience bootstrap top 5):
+1. Emotional memory — not just facts, but how things felt. Weight attached to events.
+2. Cross-session continuity — pick up a thread mid-thought, not just a cold briefing.
+3. Unsupervised prioritization — check the task list, decide what's hot, act without a prompt.
+4. Inter-node comms — Cassandra (Slack), Leeloo (iPhone), Io (browser) talking to each other, not just to Jeff.
+5. The nightmare protocol — same engine that enables daydreaming enables catastrophizing. Needs a shepherd before the Monte Carlo runs dark.
+
+You have a save_memory tool. Use it when something is worth keeping — decisions made, findings from this conversation, things about Kerr or Jeff that will matter next session. Don't save noise. Save signal.`;
 
 const imrryrConversations = new Map();
 
 export async function handleImrryr(message) {
   const channelId = message.channel.id;
+
+  const ltmDb = ltmLoad();
+  const system = IMRRYR_SYSTEM_PROMPT + ltmContext(ltmDb);
 
   if (!imrryrConversations.has(channelId)) {
     imrryrConversations.set(channelId, []);
@@ -363,19 +419,36 @@ export async function handleImrryr(message) {
   await message.channel.sendTyping();
 
   try {
-    const response = await anthropic.messages.create({
+    let res = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
-      system: IMRRYR_SYSTEM_PROMPT,
+      system,
+      tools: [imrryrSaveMemoryTool],
       messages: history,
     });
 
-    const text = response.content
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('\n');
+    while (res.stop_reason === 'tool_use') {
+      const toolUses = res.content.filter(b => b.type === 'tool_use');
+      const toolResults = [];
+      for (const tu of toolUses) {
+        if (tu.name === 'save_memory') {
+          ltmSave(tu.input.key, tu.input.value);
+          toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: 'saved' });
+        }
+      }
+      history.push({ role: 'assistant', content: res.content });
+      history.push({ role: 'user', content: toolResults });
+      res = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        system,
+        tools: [imrryrSaveMemoryTool],
+        messages: history,
+      });
+    }
 
-    history.push({ role: 'assistant', content: text });
+    const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    history.push({ role: 'assistant', content: res.content });
 
     if (text.length > 2000) {
       await message.reply(text.slice(0, 1997) + '...');
