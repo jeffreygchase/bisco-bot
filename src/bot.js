@@ -6,6 +6,20 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // Conversation history per channel (in-memory, resets on restart)
 const conversations = new Map();
 
+async function fetchArt(prompt) {
+  const res = await fetch('https://api.openai.com/v1/images/generations', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size: '1024x1024' }),
+  });
+  const json = await res.json();
+  if (!json.data || json.data.length === 0) return null;
+  return json.data[0].url;
+}
+
 async function fetchGif(query) {
   const key = process.env.GIPHY_API_KEY;
   const url = `https://api.giphy.com/v1/gifs/search?api_key=${key}&q=${encodeURIComponent(query)}&limit=5&rating=pg-13`;
@@ -460,5 +474,20 @@ export async function handleGif(message, query) {
   } catch (err) {
     console.error('Error in handleGif:', err);
     await message.reply('GIF fetch failed.');
+  }
+}
+
+export async function handleArt(message, prompt) {
+  try {
+    await message.channel.sendTyping();
+    const imageUrl = await fetchArt(prompt);
+    if (imageUrl) {
+      await message.channel.send(imageUrl);
+    } else {
+      await message.reply('No image came back — try a different prompt.');
+    }
+  } catch (err) {
+    console.error('Error in handleArt:', err);
+    await message.reply('Art generation failed.');
   }
 }

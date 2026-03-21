@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits } from 'discord.js';
-import { handleMessage, handleImrryr, handleRobotsavers, handleGif } from './bot.js';
+import { handleMessage, handleImrryr, handleRobotsavers, handleGif, handleArt } from './bot.js';
 
 const client = new Client({
   intents: [
@@ -20,10 +20,13 @@ client.on('messageCreate', async (message) => {
   // Ignore bots
   if (message.author.bot) return;
 
-  // !gif command works in any channel
+  // !gif and !art commands work in any channel
   if (message.content.startsWith('!gif ')) {
-    const query = message.content.slice(5).trim();
-    await handleGif(message, query);
+    await handleGif(message, message.content.slice(5).trim());
+    return;
+  }
+  if (message.content.startsWith('!art ')) {
+    await handleArt(message, message.content.slice(5).trim());
     return;
   }
 
