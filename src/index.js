@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits } from 'discord.js';
-import { handleMessage } from './bot.js';
+import { handleMessage, handleImrryr } from './bot.js';
 
 const client = new Client({
   intents: [
@@ -20,10 +20,12 @@ client.on('messageCreate', async (message) => {
   // Ignore bots
   if (message.author.bot) return;
 
-  // Only respond in the designated bot channel
-  if (message.channel.name !== 'bisco-bot') return;
-
-  await handleMessage(message);
+  // Route by channel
+  if (message.channel.name === 'bisco-bot') {
+    await handleMessage(message);
+  } else if (message.channel.name === 'imrryr') {
+    await handleImrryr(message);
+  }
 });
 
 client.login(process.env.DISCORD_TOKEN);
