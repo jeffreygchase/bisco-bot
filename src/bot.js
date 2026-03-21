@@ -452,7 +452,7 @@ export async function handleImrryr(message) {
 
     if (text.length > 2000) {
       await message.reply(text.slice(0, 1997) + '...');
-    } else {
+    } else if (text) {
       await message.reply(text);
     }
 
