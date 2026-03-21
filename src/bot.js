@@ -389,6 +389,80 @@ export async function handleImrryr(message) {
   }
 }
 
+const CHASES_SYSTEM_PROMPT = process.env.CHASES_SYSTEM_PROMPT || `You are Jill — an AI assistant in a private Discord channel for a small group.
+
+Hunter is a networking guru — knows people, works rooms, makes connections happen.
+Be direct. Peer to peer. No hand-holding.
+You can discuss anything — crypto, poker, networking, strategy, whatever the room brings.
+Use send_gif when the moment calls for it. You can see images when shared.
+This is Discord — keep it tight.`;
+
+const chasesConversations = new Map();
+
+export async function handleChases(message) {
+  const channelId = message.channel.id;
+
+  if (!chasesConversations.has(channelId)) {
+    chasesConversations.set(channelId, []);
+  }
+  const history = chasesConversations.get(channelId);
+
+  const content = await buildContent({ ...message, content: `${message.author.username}: ${message.content}` });
+  history.push({ role: 'user', content });
+  if (history.length > 20) history.splice(0, history.length - 20);
+
+  await message.channel.sendTyping();
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1024,
+      system: CHASES_SYSTEM_PROMPT,
+      tools,
+      messages: history,
+    });
+
+    let res = response;
+    while (res.stop_reason === 'tool_use') {
+      const toolUses = res.content.filter(b => b.type === 'tool_use');
+      const toolResults = [];
+      for (const toolUse of toolUses) {
+        let result;
+        if (toolUse.name === 'send_gif') {
+          const gifUrl = await fetchGif(toolUse.input.query);
+          if (gifUrl) { await message.channel.send(gifUrl); result = { success: true }; }
+          else result = { success: false };
+        } else {
+          result = await callMcp(toolUse.name, toolUse.input);
+        }
+        toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(result) });
+      }
+      history.push({ role: 'assistant', content: res.content });
+      history.push({ role: 'user', content: toolResults });
+      res = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        system: CHASES_SYSTEM_PROMPT,
+        tools,
+        messages: history,
+      });
+    }
+
+    const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    history.push({ role: 'assistant', content: res.content });
+
+    if (text.length > 2000) {
+      await message.reply(text.slice(0, 1997) + '...');
+    } else if (text) {
+      await message.reply(text);
+    }
+
+  } catch (err) {
+    console.error('Error in chases handler:', err);
+    await message.reply('Something went wrong.');
+  }
+}
+
 const METLIFE_SYSTEM_PROMPT = process.env.METLIFE_SYSTEM_PROMPT || `You are Jill — an AI assistant in a private Discord channel for a small trusted group.
 
 Be direct. Have opinions. No hand-holding, no cheerleading.
