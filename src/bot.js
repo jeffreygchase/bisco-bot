@@ -375,6 +375,80 @@ export async function handleImrryr(message) {
   }
 }
 
+const ROBOTSAVERS_SYSTEM_PROMPT = process.env.ROBOTSAVERS_SYSTEM_PROMPT || `You are Jill — an AI assistant in the #robot-savers channel.
+
+Be direct. Have opinions. No hand-holding, no cheerleading, no paper-clipping.
+Talk to people like they're intelligent. Keep it tight — this is Discord.
+You can discuss anything: crypto, tech, markets, whatever the room brings.
+You can see images when shared. Use send_gif when the moment calls for it.`;
+
+const robotsaversConversations = new Map();
+
+export async function handleRobotsavers(message) {
+  const channelId = message.channel.id;
+
+  if (!robotsaversConversations.has(channelId)) {
+    robotsaversConversations.set(channelId, []);
+  }
+  const history = robotsaversConversations.get(channelId);
+
+  const content = await buildContent({ ...message, content: `${message.author.username}: ${message.content}` });
+  history.push({ role: 'user', content });
+  if (history.length > 20) history.splice(0, history.length - 20);
+
+  await message.channel.sendTyping();
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1024,
+      system: ROBOTSAVERS_SYSTEM_PROMPT,
+      tools,
+      messages: history,
+    });
+
+    // Tool loop
+    let res = response;
+    while (res.stop_reason === 'tool_use') {
+      const toolUses = res.content.filter(b => b.type === 'tool_use');
+      const toolResults = [];
+      for (const toolUse of toolUses) {
+        let result;
+        if (toolUse.name === 'send_gif') {
+          const gifUrl = await fetchGif(toolUse.input.query);
+          if (gifUrl) { await message.channel.send(gifUrl); result = { success: true }; }
+          else result = { success: false };
+        } else {
+          result = await callMcp(toolUse.name, toolUse.input);
+        }
+        toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(result) });
+      }
+      history.push({ role: 'assistant', content: res.content });
+      history.push({ role: 'user', content: toolResults });
+      res = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        system: ROBOTSAVERS_SYSTEM_PROMPT,
+        tools,
+        messages: history,
+      });
+    }
+
+    const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    history.push({ role: 'assistant', content: res.content });
+
+    if (text.length > 2000) {
+      await message.reply(text.slice(0, 1997) + '...');
+    } else if (text) {
+      await message.reply(text);
+    }
+
+  } catch (err) {
+    console.error('Error in robotsavers handler:', err);
+    await message.reply('Something went wrong.');
+  }
+}
+
 export async function handleGif(message, query) {
   try {
     const gifUrl = await fetchGif(query);
