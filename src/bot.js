@@ -374,3 +374,17 @@ export async function handleImrryr(message) {
     await message.reply('Something went wrong.');
   }
 }
+
+export async function handleGif(message, query) {
+  try {
+    const gifUrl = await fetchGif(query);
+    if (gifUrl) {
+      await message.channel.send(gifUrl);
+    } else {
+      await message.reply('No GIF found for that.');
+    }
+  } catch (err) {
+    console.error('Error in handleGif:', err);
+    await message.reply('GIF fetch failed.');
+  }
+}

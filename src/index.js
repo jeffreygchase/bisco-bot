@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits } from 'discord.js';
-import { handleMessage, handleImrryr } from './bot.js';
+import { handleMessage, handleImrryr, handleGif } from './bot.js';
 
 const client = new Client({
   intents: [
@@ -19,6 +19,13 @@ client.on('messageCreate', async (message) => {
 
   // Ignore bots
   if (message.author.bot) return;
+
+  // !gif command works in any channel
+  if (message.content.startsWith('!gif ')) {
+    const query = message.content.slice(5).trim();
+    await handleGif(message, query);
+    return;
+  }
 
   // Route by channel
   if (message.channel.name === 'bisco-bot') {
