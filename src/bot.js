@@ -170,10 +170,18 @@ const tools = [
   }
 ];
 
+function detectMimeType(buf) {
+  if (buf[0] === 0x89 && buf[1] === 0x50) return 'image/png';
+  if (buf[0] === 0xFF && buf[1] === 0xD8) return 'image/jpeg';
+  if (buf[0] === 0x47 && buf[1] === 0x49) return 'image/gif';
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57) return 'image/webp';
+  return 'image/png'; // fallback
+}
+
 async function fetchImageAsBase64(url) {
   const res = await fetch(url);
-  const buffer = await res.arrayBuffer();
-  return Buffer.from(buffer).toString('base64');
+  const buffer = Buffer.from(await res.arrayBuffer());
+  return { data: buffer.toString('base64'), media_type: detectMimeType(buffer) };
 }
 
 async function buildContent(message) {
@@ -184,14 +192,10 @@ async function buildContent(message) {
   if (imageAttachments.length === 0) return message.content;
 
   const images = await Promise.all(
-    imageAttachments.map(async a => ({
-      type: 'image',
-      source: {
-        type: 'base64',
-        media_type: a.contentType.split(';')[0],
-        data: await fetchImageAsBase64(a.url),
-      },
-    }))
+    imageAttachments.map(async a => {
+      const { data, media_type } = await fetchImageAsBase64(a.url);
+      return { type: 'image', source: { type: 'base64', media_type, data } };
+    })
   );
 
   return [
