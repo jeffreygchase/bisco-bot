@@ -41,7 +41,7 @@ client.on('messageCreate', async (message) => {
     await handleMetlife(message);
   } else if (message.channel.name === 'chases') {
     await handleChases(message);
-  } else if (message.channel.name === 'shnfam') {
+  } else if (message.channel.name === 'shnfam' || message.channel.name === 'shnfamily') {
     await handleShnfam(message);
   }
 });
