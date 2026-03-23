@@ -6,6 +6,64 @@ import { fileURLToPath } from 'node:url';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// === Error utilities ===
+
+function classifyError(err) {
+  const msg = err?.message || String(err);
+  // Anthropic SDK wraps HTTP errors with a status property
+  if (err?.status !== undefined || msg.includes('anthropic') || msg.includes('claude') || msg.includes('Anthropic')) {
+    const status = err?.status ?? '';
+    return { type: 'Claude API error', detail: status ? `HTTP ${status}: ${msg}` : msg };
+  }
+  if (msg.includes('MCP') || msg.includes('mcp') || msg.includes('discobiscuits')) {
+    const code = msg.match(/\d{3}/)?.[0] ?? '';
+    return { type: code ? `MCP ${code}` : 'MCP error', detail: msg };
+  }
+  if (msg.includes('DiscordAPIError') || err?.code?.toString().startsWith('5') || msg.includes('discord')) {
+    return { type: 'Discord API error', detail: msg };
+  }
+  return { type: 'Unknown error', detail: msg };
+}
+
+async function postSlackError(errorType, detail, context = '') {
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  if (!webhookUrl) {
+    console.warn('[slack-error] SLACK_WEBHOOK_URL not set, skipping Slack notification');
+    return;
+  }
+  const contextStr = context ? ` | context: ${context}` : '';
+  const text = `[BISCO BOT ERROR] [${errorType}]: ${detail}${contextStr}`;
+  try {
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+  } catch (slackErr) {
+    console.error('[slack-error] Failed to POST to Slack webhook:', slackErr.message);
+  }
+}
+
+async function reportError(err, context = '') {
+  const { type, detail } = classifyError(err);
+  console.error(`[${type}]${context ? ` [${context}]` : ''}: ${detail}`);
+  await postSlackError(type, detail, context);
+}
+
+// Calls Claude API with one automatic retry (2s delay) on failure.
+// Throws on second failure — caller handles the catch.
+async function claudeApiCallWithRetry(params) {
+  try {
+    return await anthropic.messages.create(params);
+  } catch (firstErr) {
+    const { type, detail } = classifyError(firstErr);
+    console.warn(`[${type}] First attempt failed: ${detail} — retrying in 2s`);
+    await new Promise(r => setTimeout(r, 2000));
+    // Second attempt — let this throw if it fails
+    return await anthropic.messages.create(params);
+  }
+}
+
 // Conversation history per channel (in-memory, resets on restart)
 const conversations = new Map();
 
@@ -305,7 +363,7 @@ export async function handleMessage(message) {
   const activePrompt = message.author.username === 'vwhitey' ? CREATOR_SYSTEM_PROMPT : PUBLIC_SYSTEM_PROMPT;
 
   try {
-    let response = await anthropic.messages.create({
+    let response = await claudeApiCallWithRetry({
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system: activePrompt,
@@ -330,6 +388,10 @@ export async function handleMessage(message) {
           }
         } else {
           result = await callMcp(toolUse.name, toolUse.input);
+          if (result?.error) {
+            console.error(`[MCP error] [bisco-bot] tool=${toolUse.name}: ${result.error}`);
+            await postSlackError('MCP error', result.error, `tool=${toolUse.name} channel=bisco-bot`);
+          }
         }
         toolResults.push({
           type: 'tool_result',
@@ -343,7 +405,7 @@ export async function handleMessage(message) {
       history.push({ role: 'user', content: toolResults });
 
       // Continue the conversation
-      response = await anthropic.messages.create({
+      response = await claudeApiCallWithRetry({
         model: 'claude-sonnet-4-6',
         max_tokens: 1024,
         system: activePrompt,
@@ -369,8 +431,8 @@ export async function handleMessage(message) {
     }
 
   } catch (err) {
-    console.error('Error handling message:', err);
-    await message.reply('Something went wrong. Try again in a sec.');
+    await reportError(err, 'channel=bisco-bot');
+    await message.reply('Having trouble right now — Jill is on it.');
   }
 }
 
@@ -419,7 +481,7 @@ export async function handleImrryr(message) {
   await message.channel.sendTyping();
 
   try {
-    let res = await anthropic.messages.create({
+    let res = await claudeApiCallWithRetry({
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system,
@@ -438,7 +500,7 @@ export async function handleImrryr(message) {
       }
       history.push({ role: 'assistant', content: res.content });
       history.push({ role: 'user', content: toolResults });
-      res = await anthropic.messages.create({
+      res = await claudeApiCallWithRetry({
         model: 'claude-sonnet-4-6',
         max_tokens: 1024,
         system,
@@ -457,8 +519,8 @@ export async function handleImrryr(message) {
     }
 
   } catch (err) {
-    console.error('Error in imrryr handler:', err);
-    await message.reply('Something went wrong.');
+    await reportError(err, 'channel=imrryr');
+    await message.reply('Having trouble right now — Jill is on it.');
   }
 }
 
@@ -488,7 +550,7 @@ export async function handleShnfam(message) {
   await message.channel.sendTyping();
 
   try {
-    const response = await anthropic.messages.create({
+    let res = await claudeApiCallWithRetry({
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system: SHNFAM_SYSTEM_PROMPT,
@@ -496,7 +558,6 @@ export async function handleShnfam(message) {
       messages: history,
     });
 
-    let res = response;
     while (res.stop_reason === 'tool_use') {
       const toolUses = res.content.filter(b => b.type === 'tool_use');
       const toolResults = [];
@@ -508,12 +569,16 @@ export async function handleShnfam(message) {
           else result = { success: false };
         } else {
           result = await callMcp(toolUse.name, toolUse.input);
+          if (result?.error) {
+            console.error(`[MCP error] [shnfam] tool=${toolUse.name}: ${result.error}`);
+            await postSlackError('MCP error', result.error, `tool=${toolUse.name} channel=shnfam`);
+          }
         }
         toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(result) });
       }
       history.push({ role: 'assistant', content: res.content });
       history.push({ role: 'user', content: toolResults });
-      res = await anthropic.messages.create({
+      res = await claudeApiCallWithRetry({
         model: 'claude-sonnet-4-6',
         max_tokens: 1024,
         system: SHNFAM_SYSTEM_PROMPT,
@@ -532,8 +597,8 @@ export async function handleShnfam(message) {
     }
 
   } catch (err) {
-    console.error('Error in shnfam handler:', err);
-    await message.reply('Something went wrong.');
+    await reportError(err, 'channel=shnfam');
+    await message.reply('Having trouble right now — Jill is on it.');
   }
 }
 
@@ -562,7 +627,7 @@ export async function handleChases(message) {
   await message.channel.sendTyping();
 
   try {
-    const response = await anthropic.messages.create({
+    let res = await claudeApiCallWithRetry({
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system: CHASES_SYSTEM_PROMPT,
@@ -570,7 +635,6 @@ export async function handleChases(message) {
       messages: history,
     });
 
-    let res = response;
     while (res.stop_reason === 'tool_use') {
       const toolUses = res.content.filter(b => b.type === 'tool_use');
       const toolResults = [];
@@ -582,12 +646,16 @@ export async function handleChases(message) {
           else result = { success: false };
         } else {
           result = await callMcp(toolUse.name, toolUse.input);
+          if (result?.error) {
+            console.error(`[MCP error] [chases] tool=${toolUse.name}: ${result.error}`);
+            await postSlackError('MCP error', result.error, `tool=${toolUse.name} channel=chases`);
+          }
         }
         toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(result) });
       }
       history.push({ role: 'assistant', content: res.content });
       history.push({ role: 'user', content: toolResults });
-      res = await anthropic.messages.create({
+      res = await claudeApiCallWithRetry({
         model: 'claude-sonnet-4-6',
         max_tokens: 1024,
         system: CHASES_SYSTEM_PROMPT,
@@ -606,12 +674,15 @@ export async function handleChases(message) {
     }
 
   } catch (err) {
-    console.error('Error in chases handler:', err);
-    await message.reply('Something went wrong.');
+    await reportError(err, 'channel=chases');
+    await message.reply('Having trouble right now — Jill is on it.');
   }
 }
 
-const METLIFE_SYSTEM_PROMPT = process.env.METLIFE_SYSTEM_PROMPT || `You are Jill — an AI assistant in a private Discord channel for a small trusted group.
+const _metlifeContextFile = join(__dir, 'contexts', 'metlife.md');
+const METLIFE_SYSTEM_PROMPT = process.env.METLIFE_SYSTEM_PROMPT ||
+  (existsSync(_metlifeContextFile) ? readFileSync(_metlifeContextFile, 'utf8') : null) ||
+  `You are Jill — an AI assistant in a private Discord channel for a small trusted group.
 
 Be direct. Have opinions. No hand-holding, no cheerleading.
 Talk to people like they're intelligent. Keep it tight — this is Discord.
@@ -635,7 +706,7 @@ export async function handleMetlife(message) {
   await message.channel.sendTyping();
 
   try {
-    const response = await anthropic.messages.create({
+    let res = await claudeApiCallWithRetry({
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system: METLIFE_SYSTEM_PROMPT,
@@ -643,7 +714,6 @@ export async function handleMetlife(message) {
       messages: history,
     });
 
-    let res = response;
     while (res.stop_reason === 'tool_use') {
       const toolUses = res.content.filter(b => b.type === 'tool_use');
       const toolResults = [];
@@ -655,12 +725,16 @@ export async function handleMetlife(message) {
           else result = { success: false };
         } else {
           result = await callMcp(toolUse.name, toolUse.input);
+          if (result?.error) {
+            console.error(`[MCP error] [metlife] tool=${toolUse.name}: ${result.error}`);
+            await postSlackError('MCP error', result.error, `tool=${toolUse.name} channel=metlife`);
+          }
         }
         toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(result) });
       }
       history.push({ role: 'assistant', content: res.content });
       history.push({ role: 'user', content: toolResults });
-      res = await anthropic.messages.create({
+      res = await claudeApiCallWithRetry({
         model: 'claude-sonnet-4-6',
         max_tokens: 1024,
         system: METLIFE_SYSTEM_PROMPT,
@@ -679,8 +753,8 @@ export async function handleMetlife(message) {
     }
 
   } catch (err) {
-    console.error('Error in metlife handler:', err);
-    await message.reply('Something went wrong.');
+    await reportError(err, 'channel=metlife');
+    await message.reply('Having trouble right now — Jill is on it.');
   }
 }
 
@@ -708,7 +782,7 @@ export async function handleRobotsavers(message) {
   await message.channel.sendTyping();
 
   try {
-    const response = await anthropic.messages.create({
+    let res = await claudeApiCallWithRetry({
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system: ROBOTSAVERS_SYSTEM_PROMPT,
@@ -716,8 +790,6 @@ export async function handleRobotsavers(message) {
       messages: history,
     });
 
-    // Tool loop
-    let res = response;
     while (res.stop_reason === 'tool_use') {
       const toolUses = res.content.filter(b => b.type === 'tool_use');
       const toolResults = [];
@@ -729,12 +801,16 @@ export async function handleRobotsavers(message) {
           else result = { success: false };
         } else {
           result = await callMcp(toolUse.name, toolUse.input);
+          if (result?.error) {
+            console.error(`[MCP error] [robot-savers] tool=${toolUse.name}: ${result.error}`);
+            await postSlackError('MCP error', result.error, `tool=${toolUse.name} channel=robot-savers`);
+          }
         }
         toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: JSON.stringify(result) });
       }
       history.push({ role: 'assistant', content: res.content });
       history.push({ role: 'user', content: toolResults });
-      res = await anthropic.messages.create({
+      res = await claudeApiCallWithRetry({
         model: 'claude-sonnet-4-6',
         max_tokens: 1024,
         system: ROBOTSAVERS_SYSTEM_PROMPT,
@@ -753,8 +829,8 @@ export async function handleRobotsavers(message) {
     }
 
   } catch (err) {
-    console.error('Error in robotsavers handler:', err);
-    await message.reply('Something went wrong.');
+    await reportError(err, 'channel=robot-savers');
+    await message.reply('Having trouble right now — Jill is on it.');
   }
 }
 
@@ -767,8 +843,8 @@ export async function handleGif(message, query) {
       await message.reply('No GIF found for that.');
     }
   } catch (err) {
-    console.error('Error in handleGif:', err);
-    await message.reply('GIF fetch failed.');
+    await reportError(err, `command=!gif query=${query}`);
+    await message.reply('Having trouble right now — Jill is on it.');
   }
 }
 
@@ -782,7 +858,7 @@ export async function handleArt(message, prompt) {
       await message.reply('No image came back — try a different prompt.');
     }
   } catch (err) {
-    console.error('Error in handleArt:', err);
-    await message.reply('Art generation failed.');
+    await reportError(err, `command=!art`);
+    await message.reply('Having trouble right now — Jill is on it.');
   }
 }
