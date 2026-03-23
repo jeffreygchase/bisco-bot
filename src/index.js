@@ -49,14 +49,8 @@ client.on('messageCreate', async (message) => {
 
 client.login(process.env.DISCORD_TOKEN);
 
-// ─── Cassandra Relay Poller ────────────────────────────────────────────────────
+// ─── Relay Bus Poller ──────────────────────────────────────────────────────────
 const RELAY_FILE = process.env.RELAY_FILE || '/home/ec2-user/relay-queue.json';
-
-const RELAY_CHANNEL_MAP = {
-  '#shnfamily': ['shnfam', 'shnfamily'],
-  '#metlife':   ['metlife'],
-  '#bisco-bot': ['bisco-bot'],
-};
 
 async function pollRelay() {
   if (!existsSync(RELAY_FILE)) return;
@@ -70,22 +64,22 @@ async function pollRelay() {
 
   let changed = false;
   for (const entry of queue) {
-    if (entry.processed) continue;
-    const targetNames = RELAY_CHANNEL_MAP[entry.source_channel];
-    if (!targetNames) { entry.processed = true; changed = true; continue; }
+    if (!entry.to || !entry.to.includes('biscobot')) continue;
+    if (entry.processed && entry.processed.biscobot) continue;
 
     const channel = client.channels.cache.find(
-      c => targetNames.includes(c.name) && c.isTextBased()
+      c => c.name === entry.channel && c.isTextBased()
     );
     if (!channel) {
-      console.warn(`[relay] no Discord channel found for ${entry.source_channel}`);
+      console.warn(`[relay] no Discord channel found for ${entry.channel}`);
       continue;
     }
 
     try {
-      await channel.send(`**[Cassandra relay from ${entry.source_channel}]**\n> ${entry.user_text}\n${entry.cassandra_reply}`);
-      console.log(`[relay] posted to #${channel.name} from ${entry.source_channel}`);
-      entry.processed = true;
+      await channel.send(`**[${entry.from} / ${entry.channel}]**\n> ${entry.user_text}\n${entry.body}`);
+      console.log(`[relay] posted to discord/${entry.channel} from ${entry.from}`);
+      if (!entry.processed) entry.processed = {};
+      entry.processed.biscobot = true;
       changed = true;
     } catch (err) {
       console.error('[relay] post error:', err.message);
